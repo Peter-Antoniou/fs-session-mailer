@@ -400,4 +400,17 @@ app.use((err, req, res, _next) => {
 app.listen(PORT, () => {
   console.log(`fs-session-mailer running on http://localhost:${PORT}`);
   console.log(`Webhook endpoint: POST http://localhost:${PORT}/webhook`);
+
+  // Self-ping every 10 minutes to prevent Render free-tier spin-down.
+  // Without this the service sleeps after 15 min of inactivity and the
+  // activation bridge's forward times out waiting for the cold start.
+  const SELF_URL = process.env.RENDER_EXTERNAL_URL;
+  if (SELF_URL) {
+    setInterval(() => {
+      fetch(`${SELF_URL}/health`)
+        .then(() => console.log(`[${new Date().toISOString()}] keep-alive ping ok`))
+        .catch((e) => console.warn(`[${new Date().toISOString()}] keep-alive ping failed: ${e.message}`));
+    }, 10 * 60 * 1000);
+    console.log(`Keep-alive ping active → ${SELF_URL}/health every 10 min`);
+  }
 });
