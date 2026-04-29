@@ -41,7 +41,7 @@
     pre { background: var(--bg); border-radius: 8px; padding: .85rem 1rem; overflow: auto; margin: 0; }
     code { background: var(--bg); padding: .1em .4em; border-radius: 4px; }
     label { display: block; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: .3rem; margin-top: .8rem; }
-    input[type=email] { width: 100%; padding: .5rem .7rem; border-radius: 7px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; font-size: .88rem; }
+    input[type=email], input[type=text] { width: 100%; padding: .5rem .7rem; border-radius: 7px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; font-size: .88rem; }
     .btn { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--border); padding: .45rem .9rem; background: #243044; color: var(--text); font-size: .85rem; }
     .btn:hover { filter: brightness(1.1); }
     .btn.primary { background: var(--accent); border-color: transparent; color: #fff; font-weight: 600; }
@@ -102,7 +102,7 @@
 <header>
   <div>
     <h1>fs-session-mailer</h1>
-    <p class="sub">Receives Fullstory session-summary webhooks and emails them to the address in the payload.</p>
+    <p class="sub">Receives Fullstory webhooks, generates an AI session summary via the Fullstory Sessions API, and emails it to the address in the payload.</p>
   </div>
   <div class="status-pill" id="connStatus" data-state="connecting">Connecting…</div>
 </header>
@@ -114,10 +114,16 @@
     <!-- Test fire -->
     <div class="card">
       <h2>Send a test email</h2>
-      <p class="hint">Fires a sample payload through <code>POST /test</code>.</p>
-      <label for="testEmail">Recipient email</label>
+      <p class="hint">Calls <code>POST /test</code>. Provide a real <code>device_id</code> + <code>session_id</code> to trigger live AI summary generation.</p>
+      <label for="testEmail">Recipient email <span style="color:var(--bad)">*</span></label>
       <input type="email" id="testEmail" placeholder="you@example.com" />
-      <button class="btn primary" id="btnTest" style="margin-top:.75rem;width:100%">Send test email</button>
+      <label for="testDeviceId">device_id</label>
+      <input type="text" id="testDeviceId" placeholder="e.g. 4Q2XXXXXXXX" />
+      <label for="testSessionId">session_id</label>
+      <input type="text" id="testSessionId" placeholder="e.g. 1234567890" />
+      <label for="testSessionUrl">session_url</label>
+      <input type="text" id="testSessionUrl" placeholder="https://app.fullstory.com/ui/…" />
+      <button class="btn primary" id="btnTest" style="margin-top:.85rem;width:100%">Send test email</button>
       <div class="result" id="testResult"></div>
     </div>
 
@@ -127,7 +133,7 @@
       <table class="ref">
         <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
         <tbody>
-          <tr><td>POST</td><td>/webhook</td><td>Receive session summary &amp; send email</td></tr>
+          <tr><td>POST</td><td>/webhook</td><td>Receive webhook, generate AI summary, send email</td></tr>
           <tr><td>POST</td><td>/test</td><td>Fire a sample payload</td></tr>
           <tr><td>GET</td><td>/health</td><td>Health check</td></tr>
           <tr><td>GET</td><td>/api/feed</td><td>Live SSE event stream</td></tr>
@@ -158,15 +164,15 @@
     <table class="ref">
       <thead><tr><th>Field</th><th>Required?</th><th>Notes</th></tr></thead>
       <tbody>
-        <tr><td>to_email</td><td>one of these</td><td>Also accepted as <code>email</code>, <code>recipient</code>, <code>recipient_email</code></td></tr>
-        <tr><td>session_id</td><td>—</td><td>Appears in email subject and header</td></tr>
-        <tr><td>session_url</td><td>—</td><td>Rendered as a clickable link</td></tr>
-        <tr><td>user_id / user_email</td><td>—</td><td></td></tr>
-        <tr><td>summary</td><td>—</td><td>AI / narrative summary — shown prominently at top of email</td></tr>
-        <tr><td>duration_seconds</td><td>—</td><td>Shown as Xm Ys</td></tr>
+        <tr><td>to_email</td><td>yes</td><td>Also accepted as <code>email</code>, <code>recipient</code>, <code>recipient_email</code></td></tr>
+        <tr><td>device_id</td><td>yes</td><td>Combined with <code>session_id</code> as <code>device_id:session_id</code> to call the Fullstory Summary API</td></tr>
+        <tr><td>session_id</td><td>yes</td><td>Appears in the email subject line</td></tr>
+        <tr><td>session_url</td><td>—</td><td>Rendered as a clickable link in the email</td></tr>
+        <tr><td>user_id</td><td>—</td><td></td></tr>
+        <tr><td>user_email</td><td>—</td><td></td></tr>
+        <tr><td>duration_seconds</td><td>—</td><td>Displayed as Xm Ys</td></tr>
         <tr><td>page_count</td><td>—</td><td></td></tr>
-        <tr><td>events</td><td>—</td><td>Array of strings or objects</td></tr>
-        <tr><td><em>any other key</em></td><td>—</td><td>Extra fields appended to details table in the email</td></tr>
+        <tr><td><em>any other key</em></td><td>—</td><td>Extra scalar fields appended to the details table</td></tr>
       </tbody>
     </table>
   </div>
@@ -298,19 +304,28 @@ document.getElementById('btnClear').addEventListener('click', () => {
 // ── Test button ───────────────────────────────────────────────────────────────
 
 document.getElementById('btnTest').addEventListener('click', async () => {
-  const email = document.getElementById('testEmail').value.trim();
-  const resultEl = document.getElementById('testResult');
+  const email     = document.getElementById('testEmail').value.trim();
+  const deviceId  = document.getElementById('testDeviceId').value.trim();
+  const sessionId = document.getElementById('testSessionId').value.trim();
+  const sessionUrl = document.getElementById('testSessionUrl').value.trim();
+  const resultEl  = document.getElementById('testResult');
+
   if (!email) { alert('Enter a recipient email first'); return; }
+
+  const payload = { to_email: email };
+  if (deviceId)  payload.device_id   = deviceId;
+  if (sessionId) payload.session_id  = sessionId;
+  if (sessionUrl) payload.session_url = sessionUrl;
 
   const btn = document.getElementById('btnTest');
   btn.disabled = true;
-  btn.textContent = 'Sending…';
+  btn.textContent = deviceId && sessionId ? 'Generating summary…' : 'Sending…';
 
   try {
     const r = await fetch('/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to_email: email }),
+      body: JSON.stringify(payload),
     });
     const j = await r.json();
     resultEl.textContent = JSON.stringify(j, null, 2);

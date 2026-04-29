@@ -95,6 +95,8 @@ app.get('/api/feed', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  // Disable nginx/Render proxy buffering so events arrive immediately
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
   sseClients.push(res);
   req.on('close', () => {
@@ -102,6 +104,12 @@ app.get('/api/feed', (req, res) => {
     if (i >= 0) sseClients.splice(i, 1);
   });
   res.write(`data: ${JSON.stringify({ type: 'hello', backlog: requestLog.slice(-50) })}\n\n`);
+
+  // Send a keep-alive comment every 25 s so Render doesn't close idle connections
+  const ping = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch { clearInterval(ping); }
+  }, 25000);
+  req.on('close', () => clearInterval(ping));
 });
 
 // ── Health ────────────────────────────────────────────────────────────────────
