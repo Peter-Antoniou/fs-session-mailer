@@ -222,16 +222,17 @@ function buildTextBody(payload) {
   return lines.join('\n');
 }
 
-// ── Webhook endpoint ──────────────────────────────────────────────────────────
+// ── Core send logic (shared by /webhook and /test) ───────────────────────────
 
-app.post('/webhook', async (req, res) => {
-  if (!verifySignature(req)) {
-    return res.status(401).json({ ok: false, error: 'Invalid or missing X-FS-Signature header' });
-  }
-
-  const body = req.body;
+/**
+ * Validate the payload and send the session-summary email.
+ * Returns { ok, to, session_id } on success or throws with a { status, message }.
+ */
+async function sendSessionEmail(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    return res.status(400).json({ ok: false, error: 'Request body must be a JSON object' });
+    const e = new Error('Request body must be a JSON object');
+    e.status = 400;
+    throw e;
   }
 
   const toEmail =
@@ -241,10 +242,11 @@ app.post('/webhook', async (req, res) => {
     body.recipient_email;
 
   if (!toEmail || typeof toEmail !== 'string' || !toEmail.includes('@')) {
-    return res.status(400).json({
-      ok:    false,
-      error: 'Payload must include a valid email in one of: to_email, email, recipient, recipient_email',
-    });
+    const e = new Error(
+      'Payload must include a valid email in one of: to_email, email, recipient, recipient_email',
+    );
+    e.status = 400;
+    throw e;
   }
 
   const sessionId = body.session_id || body.sessionId || null;
@@ -252,32 +254,43 @@ app.post('/webhook', async (req, res) => {
     ? `Fullstory Session Summary – ${sessionId}`
     : 'Fullstory Session Summary';
 
-  try {
-    await transporter.sendMail({
-      from:    EMAIL_FROM,
-      to:      toEmail,
-      subject,
-      html:    buildEmailHtml(body),
-      text:    buildTextBody(body),
-    });
+  await transporter.sendMail({
+    from:    EMAIL_FROM,
+    to:      toEmail,
+    subject,
+    html:    buildEmailHtml(body),
+    text:    buildTextBody(body),
+  });
 
-    const ts = new Date().toISOString();
-    console.log(`[${ts}] email sent  to=${toEmail}  session=${sessionId ?? 'n/a'}`);
-    res.json({ ok: true, to: toEmail, session_id: sessionId });
+  const ts = new Date().toISOString();
+  console.log(`[${ts}] email sent  to=${toEmail}  session=${sessionId ?? 'n/a'}`);
+  return { ok: true, to: toEmail, session_id: sessionId };
+}
+
+// ── Webhook endpoint ──────────────────────────────────────────────────────────
+
+app.post('/webhook', async (req, res) => {
+  if (!verifySignature(req)) {
+    return res.status(401).json({ ok: false, error: 'Invalid or missing X-FS-Signature header' });
+  }
+
+  try {
+    const result = await sendSessionEmail(req.body);
+    res.json(result);
   } catch (err) {
     const ts = new Date().toISOString();
-    console.error(`[${ts}] email failed  to=${toEmail}  error=${err.message}`);
-    res.status(502).json({ ok: false, error: err.message });
+    console.error(`[${ts}] webhook error: ${err.message}`);
+    res.status(err.status || 502).json({ ok: false, error: err.message });
   }
 });
 
 // ── Test-fire endpoint (dev only) ─────────────────────────────────────────────
 
-app.post('/test', express.json(), async (req, res) => {
+app.post('/test', async (req, res) => {
   const overrides = req.body || {};
   const sample = {
-    to_email:         overrides.to_email  || 'you@example.com',
-    session_id:       overrides.session_id || 'demo-abc123',
+    to_email:         overrides.to_email   || 'you@example.com',
+    session_id:       overrides.session_id  || 'demo-abc123',
     session_url:      'https://app.fullstory.com/ui/YOUR_ORG/sessions/demo-abc123',
     user_id:          'user_9876',
     user_email:       'alice@example.com',
@@ -295,28 +308,23 @@ app.post('/test', express.json(), async (req, res) => {
     ...overrides,
   };
 
-  // Forward internally to the real webhook handler
-  const { default: http } = await import('http');
-  const payload = JSON.stringify(sample);
-  const options = {
-    hostname: '127.0.0.1',
-    port:     PORT,
-    path:     '/webhook',
-    method:   'POST',
-    headers:  { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-  };
+  try {
+    const result = await sendSessionEmail(sample);
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 502).json({ ok: false, error: err.message });
+  }
+});
 
-  const proxyReq = http.request(options, (proxyRes) => {
-    let data = '';
-    proxyRes.on('data', (chunk) => { data += chunk; });
-    proxyRes.on('end',  () => {
-      try { res.status(proxyRes.statusCode).json(JSON.parse(data)); }
-      catch { res.status(proxyRes.statusCode).send(data); }
-    });
-  });
-  proxyReq.on('error', (e) => res.status(500).json({ ok: false, error: e.message }));
-  proxyReq.write(payload);
-  proxyReq.end();
+// ── JSON error handler (catches body-parser errors + anything else) ────────────
+// Must be defined with 4 parameters so Express treats it as an error handler.
+// Without this, Express returns an HTML error page by default.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, _next) => {
+  const status  = err.status || err.statusCode || 500;
+  const message = err.expose !== false && err.message ? err.message : 'Internal server error';
+  console.error(`[${new Date().toISOString()}] unhandled error ${status}: ${err.message}`);
+  res.status(status).json({ ok: false, error: message });
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
