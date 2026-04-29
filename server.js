@@ -1,15 +1,21 @@
 /**
  * fs-session-mailer
  *
- * POST /webhook  — receive a Fullstory session-summary webhook and email it
- *                  to the address supplied in the payload.
+ * POST /webhook  — receive a Fullstory session-summary webhook, generate an
+ *                  AI summary via the Fullstory Sessions API, and email it
+ *                  to the address supplied in the JSON body.
  *
  * Required payload fields
  *   to_email | email | recipient | recipient_email   — where to send the email
+ *   device_id + session_id                           — used to call the FS summary API
  *
- * Optional payload fields (all are rendered if present)
- *   session_id, session_url, user_id, user_email, summary,
- *   duration_seconds, page_count, events[], … any extra key
+ * Optional payload fields
+ *   session_url, user_id, user_email, duration_seconds, page_count, … any extra key
+ *
+ * Required env vars
+ *   FS_API_KEY      — Fullstory API key (Basic auth value)
+ *   FS_PROFILE_ID   — summary prompt-profile ID
+ *   FS_API_BASE     — API base URL, e.g. https://api.eu1.fullstory.com
  *
  * Optional security
  *   If WEBHOOK_SECRET is set, the request must include an
@@ -26,9 +32,13 @@ import { dirname, join } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const PORT            = Number(process.env.PORT)            || 3849;
-const WEBHOOK_SECRET  = process.env.WEBHOOK_SECRET          || '';
-const EMAIL_FROM      = process.env.EMAIL_FROM              || process.env.SMTP_USER || '';
+const PORT           = Number(process.env.PORT)   || 3849;
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
+const EMAIL_FROM     = process.env.EMAIL_FROM     || process.env.SMTP_USER || '';
+
+const FS_API_KEY    = process.env.FS_API_KEY    || '';
+const FS_PROFILE_ID = process.env.FS_PROFILE_ID || '';
+const FS_API_BASE   = (process.env.FS_API_BASE  || 'https://api.fullstory.com').replace(/\/$/, '');
 
 // ── Mailer ────────────────────────────────────────────────────────────────────
 
@@ -91,7 +101,6 @@ app.get('/api/feed', (req, res) => {
     const i = sseClients.indexOf(res);
     if (i >= 0) sseClients.splice(i, 1);
   });
-  // Send backlog so a fresh page load shows recent requests
   res.write(`data: ${JSON.stringify({ type: 'hello', backlog: requestLog.slice(-50) })}\n\n`);
 });
 
@@ -117,14 +126,52 @@ function verifySignature(req) {
   }
 }
 
+// ── Fullstory summary API ─────────────────────────────────────────────────────
+
+/**
+ * Call the Fullstory Sessions API to generate an AI summary for the session.
+ * Session ID is constructed as  device_id:session_id  (colon-separated).
+ * Returns the summary string, or throws on error.
+ */
+async function generateFSSummary(deviceId, sessionId) {
+  if (!FS_API_KEY)    throw new Error('FS_API_KEY env var is not set');
+  if (!FS_PROFILE_ID) throw new Error('FS_PROFILE_ID env var is not set');
+
+  const compositeId = encodeURIComponent(`${deviceId}:${sessionId}`);
+  const url = `${FS_API_BASE}/v2/sessions/${compositeId}/summary?profile_id=${encodeURIComponent(FS_PROFILE_ID)}`;
+
+  const ts = new Date().toISOString();
+  console.log(`[${ts}] FS summary API → GET ${url}`);
+
+  const res = await fetch(url, {
+    method:  'GET',
+    headers: { Authorization: `Basic ${FS_API_KEY}` },
+  });
+
+  const raw = await res.text();
+  if (!res.ok) {
+    throw new Error(`Fullstory API ${res.status}: ${raw}`);
+  }
+
+  // Response is { "summary": "..." }
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed.summary === 'string' ? parsed.summary : raw;
+  } catch {
+    return raw; // plain-text response
+  }
+}
+
 // ── Email builder ─────────────────────────────────────────────────────────────
 
 const EMAIL_FIELD_KEYS = new Set(['to_email', 'email', 'recipient', 'recipient_email']);
 
-const KNOWN_FIELDS = [
+const SKIP_IN_TABLE = new Set([
+  'to_email', 'email', 'recipient', 'recipient_email',
   'session_id', 'session_url', 'user_id', 'user_email',
-  'summary', 'duration_seconds', 'page_count', 'events',
-];
+  'summary', 'duration_seconds', 'page_count',
+  'device_id', // internal — used for API call, not rendered
+]);
 
 function escapeHtml(s) {
   return String(s)
@@ -162,25 +209,16 @@ function detailsTable(rows) {
     </table>`;
 }
 
-function buildEmailHtml(payload) {
-  const {
-    session_id,
-    session_url,
-    user_id,
-    user_email,
-    summary,
-    duration_seconds,
-    page_count,
-    events,
-    ...extra
-  } = payload;
+function buildEmailHtml(payload, generatedSummary) {
+  const { session_id, session_url, user_id, user_email, duration_seconds, page_count } = payload;
 
-  // Build detail rows from known fields
+  const summary = generatedSummary || payload.summary || null;
+
   const knownRows = [];
-  if (session_id)         knownRows.push(['Session ID', session_id]);
-  if (session_url)        knownRows.push(['Session URL', session_url]);
-  if (user_id)            knownRows.push(['User ID', user_id]);
-  if (user_email)         knownRows.push(['User email', user_email]);
+  if (session_id)              knownRows.push(['Session ID', session_id]);
+  if (session_url)             knownRows.push(['Session URL', session_url]);
+  if (user_id)                 knownRows.push(['User ID', user_id]);
+  if (user_email)              knownRows.push(['User email', user_email]);
   if (duration_seconds != null) {
     const m = Math.floor(duration_seconds / 60);
     const s = Math.round(duration_seconds % 60);
@@ -188,27 +226,11 @@ function buildEmailHtml(payload) {
   }
   if (page_count != null) knownRows.push(['Pages visited', page_count]);
 
-  // Append any extra scalar fields from the payload
-  const extraRows = Object.entries(extra)
-    .filter(([k]) => !EMAIL_FIELD_KEYS.has(k))
+  const extraRows = Object.entries(payload)
+    .filter(([k]) => !SKIP_IN_TABLE.has(k))
     .filter(([, v]) => v !== null && v !== undefined);
 
   const allRows = [...knownRows, ...extraRows];
-
-  // Events section (capped at 30)
-  let eventsHtml = '';
-  if (Array.isArray(events) && events.length) {
-    const shown = events.slice(0, 30);
-    const more  = events.length - shown.length;
-    eventsHtml = `
-      <h2 style="color:#333;font-size:16px;margin:28px 0 10px">
-        Events <span style="font-weight:400;color:#999;font-size:13px">(${events.length})</span>
-      </h2>
-      <ol style="margin:0;padding-left:20px;color:#555;line-height:1.9;font-size:13px">
-        ${shown.map((e) => `<li>${typeof e === 'string' ? escapeHtml(e) : escapeHtml(JSON.stringify(e))}</li>`).join('')}
-        ${more ? `<li style="color:#aaa">… and ${more} more</li>` : ''}
-      </ol>`;
-  }
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -225,9 +247,9 @@ function buildEmailHtml(payload) {
 
     <div style="padding:28px 36px">
 
-      <!-- AI / narrative summary -->
+      <!-- AI summary -->
       ${summary ? `
-      <div style="background:#f0f7ff;border-left:4px solid #3d8bfd;border-radius:6px;padding:16px 18px;margin-bottom:24px;font-size:15px;line-height:1.65;color:#333">
+      <div style="background:#f0f7ff;border-left:4px solid #3d8bfd;border-radius:6px;padding:16px 18px;margin-bottom:24px;font-size:15px;line-height:1.65;color:#333;white-space:pre-wrap">
         ${escapeHtml(String(summary))}
       </div>` : ''}
 
@@ -235,9 +257,6 @@ function buildEmailHtml(payload) {
       ${allRows.length ? `
       <h2 style="color:#333;font-size:16px;margin:0 0 10px">Details</h2>
       ${detailsTable(allRows)}` : ''}
-
-      <!-- Events -->
-      ${eventsHtml}
 
     </div>
 
@@ -250,11 +269,12 @@ function buildEmailHtml(payload) {
 </html>`;
 }
 
-function buildTextBody(payload) {
+function buildTextBody(payload, generatedSummary) {
+  const summary = generatedSummary || payload.summary || null;
   const lines = ['Fullstory Session Summary', '=========================', ''];
-  if (payload.summary) lines.push(String(payload.summary), '');
+  if (summary) lines.push(summary, '');
   for (const [k, v] of Object.entries(payload)) {
-    if (EMAIL_FIELD_KEYS.has(k)) continue;
+    if (SKIP_IN_TABLE.has(k) || EMAIL_FIELD_KEYS.has(k)) continue;
     lines.push(`${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`);
   }
   return lines.join('\n');
@@ -262,10 +282,6 @@ function buildTextBody(payload) {
 
 // ── Core send logic (shared by /webhook and /test) ───────────────────────────
 
-/**
- * Validate the payload and send the session-summary email.
- * Returns { ok, to, session_id } on success or throws with a { status, message }.
- */
 async function sendSessionEmail(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     const e = new Error('Request body must be a JSON object');
@@ -287,8 +303,23 @@ async function sendSessionEmail(body) {
     throw e;
   }
 
-  const sessionId = body.session_id || body.sessionId || null;
-  const subject   = sessionId
+  // Generate summary via Fullstory API when device_id + session_id are present
+  let generatedSummary = null;
+  const deviceId  = body.device_id;
+  const sessionId = body.session_id || body.sessionId;
+
+  if (deviceId && sessionId) {
+    try {
+      generatedSummary = await generateFSSummary(deviceId, sessionId);
+      const ts = new Date().toISOString();
+      console.log(`[${ts}] FS summary generated  session=${deviceId}:${sessionId}`);
+    } catch (err) {
+      // Non-fatal: log and fall back to payload's summary field (if any)
+      console.warn(`[${new Date().toISOString()}] FS summary failed: ${err.message}`);
+    }
+  }
+
+  const subject = sessionId
     ? `Fullstory Session Summary – ${sessionId}`
     : 'Fullstory Session Summary';
 
@@ -296,13 +327,13 @@ async function sendSessionEmail(body) {
     from:    EMAIL_FROM,
     to:      toEmail,
     subject,
-    html:    buildEmailHtml(body),
-    text:    buildTextBody(body),
+    html:    buildEmailHtml(body, generatedSummary),
+    text:    buildTextBody(body, generatedSummary),
   });
 
   const ts = new Date().toISOString();
   console.log(`[${ts}] email sent  to=${toEmail}  session=${sessionId ?? 'n/a'}`);
-  return { ok: true, to: toEmail, session_id: sessionId };
+  return { ok: true, to: toEmail, session_id: sessionId ?? null };
 }
 
 // ── Webhook endpoint ──────────────────────────────────────────────────────────
@@ -319,8 +350,7 @@ app.post('/webhook', async (req, res) => {
     result = await sendSessionEmail(req.body);
     res.json(result);
   } catch (err) {
-    const ts = new Date().toISOString();
-    console.error(`[${ts}] webhook error: ${err.message}`);
+    console.error(`[${new Date().toISOString()}] webhook error: ${err.message}`);
     error = err.message;
     res.status(err.status || 502).json({ ok: false, error: err.message });
   }
@@ -343,23 +373,20 @@ app.post('/test', async (req, res) => {
   const overrides = req.body || {};
   const sample = {
     to_email:         overrides.to_email   || 'you@example.com',
-    session_id:       overrides.session_id  || 'demo-abc123',
-    session_url:      'https://app.fullstory.com/ui/YOUR_ORG/sessions/demo-abc123',
-    user_id:          'user_9876',
-    user_email:       'alice@example.com',
-    summary:          'The user landed on the pricing page, compared the Pro and Enterprise tiers, then navigated to checkout. They entered payment details but abandoned after seeing the annual total.',
-    duration_seconds: 187,
-    page_count:       4,
-    events: [
-      'Page view: /pricing',
-      'Click: "Compare plans"',
-      'Page view: /checkout',
-      'Form interaction: payment fields',
-      'Rage click: "Apply coupon"',
-      'Page exit',
-    ],
+    device_id:        overrides.device_id  || null,
+    session_id:       overrides.session_id || null,
+    session_url:      overrides.session_url || null,
+    user_id:          overrides.user_id    || null,
+    user_email:       overrides.user_email || null,
+    duration_seconds: overrides.duration_seconds ?? null,
+    page_count:       overrides.page_count ?? null,
     ...overrides,
   };
+
+  // Strip nulls from sample so the email isn't cluttered
+  for (const k of Object.keys(sample)) {
+    if (sample[k] === null) delete sample[k];
+  }
 
   const receivedAt = new Date().toISOString();
   let result, error;
@@ -384,9 +411,8 @@ app.post('/test', async (req, res) => {
   });
 });
 
-// ── JSON error handler (catches body-parser errors + anything else) ────────────
-// Must be defined with 4 parameters so Express treats it as an error handler.
-// Without this, Express returns an HTML error page by default.
+// ── JSON error handler ────────────────────────────────────────────────────────
+
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {
   const status  = err.status || err.statusCode || 500;
@@ -400,10 +426,8 @@ app.use((err, req, res, _next) => {
 app.listen(PORT, () => {
   console.log(`fs-session-mailer running on http://localhost:${PORT}`);
   console.log(`Webhook endpoint: POST http://localhost:${PORT}/webhook`);
+  console.log(`FS API base: ${FS_API_BASE}  profile: ${FS_PROFILE_ID || '(not set)'}`);
 
-  // Self-ping every 10 minutes to prevent Render free-tier spin-down.
-  // Without this the service sleeps after 15 min of inactivity and the
-  // activation bridge's forward times out waiting for the cold start.
   const SELF_URL = process.env.RENDER_EXTERNAL_URL;
   if (SELF_URL) {
     setInterval(() => {
