@@ -10,34 +10,91 @@
       --text: #e8eef5; --muted: #8b9cb3; --accent: #3d8bfd;
       --good: #3ecf8e; --bad: #f07178; --warn: #f0c14a;
       --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --radius: 10px;
     }
     * { box-sizing: border-box; }
     body { margin: 0; font-family: system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background: var(--bg); color: var(--text); line-height: 1.55; min-height: 100vh; }
-    header { background: linear-gradient(180deg,#141c28 0%,var(--bg) 100%); border-bottom: 1px solid var(--border); padding: 1.5rem clamp(1rem,4vw,2.5rem); display: flex; align-items: center; justify-content: space-between; }
-    h1 { margin: 0 0 .3rem; font-size: 1.35rem; }
+
+    /* ── Header ── */
+    header { background: linear-gradient(180deg,#141c28 0%,var(--bg) 100%); border-bottom: 1px solid var(--border); padding: 1.5rem clamp(1rem,4vw,2.5rem); display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+    h1 { margin: 0 0 .3rem; font-size: 1.35rem; font-weight: 650; }
     .sub { margin: 0; color: var(--muted); font-size: .9rem; }
-    .pill { padding: .3rem .75rem; border-radius: 999px; font-size: .75rem; font-weight: 700; border: 1px solid var(--border); }
-    .pill.ok  { border-color: rgba(62,207,142,.5); color: var(--good); }
-    .pill.err { border-color: rgba(240,113,120,.5); color: var(--bad);  }
-    main { max-width: 820px; margin: 2rem auto; padding: 0 clamp(1rem,4vw,2.5rem); display: flex; flex-direction: column; gap: 1.25rem; }
-    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem 1.5rem; }
+    .status-pill { flex-shrink: 0; padding: .35rem .75rem; border-radius: 999px; font-size: .75rem; font-weight: 700; border: 1px solid var(--border); background: var(--surface); }
+    .status-pill[data-state=live]       { border-color: rgba(62,207,142,.5); color: var(--good); }
+    .status-pill[data-state=connecting] { color: var(--warn); }
+    .status-pill[data-state=error]      { border-color: rgba(240,113,120,.5); color: var(--bad); }
+
+    /* ── Layout ── */
+    .page { max-width: 960px; margin: 0 auto; padding: 1.5rem clamp(1rem,4vw,2.5rem) 3rem; display: flex; flex-direction: column; gap: 1.25rem; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+    @media(max-width:700px){ .grid2 { grid-template-columns: 1fr; } }
+
+    /* ── Cards ── */
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem 1.5rem; }
     .card h2 { margin: 0 0 .85rem; font-size: 1rem; font-weight: 650; }
+    .card-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .75rem; }
+    .card-head h2 { margin: 0; }
     .hint { margin: 0 0 .75rem; font-size: .85rem; color: var(--muted); }
+
+    /* ── Form elements ── */
     pre, code { font-family: var(--mono); font-size: .82rem; }
     pre { background: var(--bg); border-radius: 8px; padding: .85rem 1rem; overflow: auto; margin: 0; }
     code { background: var(--bg); padding: .1em .4em; border-radius: 4px; }
     label { display: block; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: .3rem; margin-top: .8rem; }
-    input[type=email], textarea { width: 100%; padding: .5rem .7rem; border-radius: 7px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; font-size: .88rem; resize: vertical; }
-    textarea { font-family: var(--mono); font-size: .78rem; min-height: 160px; }
-    button { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--border); padding: .5rem 1rem; background: var(--accent); color: #fff; font-weight: 600; margin-top: .85rem; border-color: transparent; }
-    button:hover { filter: brightness(1.08); }
-    .result { margin-top: .75rem; padding: .6rem .85rem; border-radius: 7px; font-family: var(--mono); font-size: .78rem; display: none; }
+    input[type=email] { width: 100%; padding: .5rem .7rem; border-radius: 7px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; font-size: .88rem; }
+    .btn { font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid var(--border); padding: .45rem .9rem; background: #243044; color: var(--text); font-size: .85rem; }
+    .btn:hover { filter: brightness(1.1); }
+    .btn.primary { background: var(--accent); border-color: transparent; color: #fff; font-weight: 600; }
+    .btn.ghost { background: transparent; }
+    .result { margin-top: .75rem; padding: .6rem .85rem; border-radius: 7px; font-family: var(--mono); font-size: .78rem; display: none; white-space: pre-wrap; }
     .result.ok  { background: rgba(62,207,142,.12); border: 1px solid rgba(62,207,142,.3); color: var(--good); }
-    .result.err { background: rgba(240,113,120,.12); border: 1px solid rgba(240,113,120,.3); color: var(--bad);  }
-    table { width: 100%; border-collapse: collapse; font-size: .85rem; }
-    td, th { padding: .45rem .6rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
-    th { color: var(--muted); font-weight: 600; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }
-    td:first-child { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+    .result.err { background: rgba(240,113,120,.12); border: 1px solid rgba(240,113,120,.3); color: var(--bad); }
+
+    /* ── Reference table ── */
+    table.ref { width: 100%; border-collapse: collapse; font-size: .85rem; }
+    table.ref td, table.ref th { padding: .45rem .6rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    table.ref th { color: var(--muted); font-weight: 600; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }
+    table.ref td:first-child { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+
+    /* ── Live feed ── */
+    .feed-list { display: flex; flex-direction: column; gap: .65rem; max-height: 60vh; overflow-y: auto; }
+    .req-card { border: 1px solid var(--border); border-radius: 8px; padding: .75rem; background: #141c26; }
+    .req-card.ok-true  { border-left: 3px solid var(--good); }
+    .req-card.ok-false { border-left: 3px solid var(--bad); }
+    .req-meta { display: flex; flex-wrap: wrap; gap: .35rem .9rem; font-size: .78rem; color: var(--muted); margin-bottom: .55rem; align-items: center; }
+    .req-meta strong { color: var(--text); }
+    .badge { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .68rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+    .badge-ok    { background: rgba(62,207,142,.15); color: var(--good); border: 1px solid rgba(62,207,142,.35); }
+    .badge-err   { background: rgba(240,113,120,.15); color: var(--bad);  border: 1px solid rgba(240,113,120,.35); }
+    .badge-test  { background: rgba(61,139,253,.15);  color: var(--accent); border: 1px solid rgba(61,139,253,.35); }
+    .badge-hook  { background: rgba(240,193,74,.15);  color: var(--warn); border: 1px solid rgba(240,193,74,.35); }
+    .req-error { font-size: .78rem; color: var(--bad); margin-top: .4rem; }
+
+    /* ── Packet table ── */
+    .packet-table { background: var(--bg); border-radius: 6px; padding: .4rem .35rem; font-family: var(--mono); font-size: .78rem; overflow: auto; max-height: 260px; }
+    .packet-table.nested { background: transparent; padding: 0; max-height: none; overflow: visible; margin: 0; }
+    .packet-row { display: grid; grid-template-columns: minmax(110px, 30%) 1fr; gap: .3rem .6rem; padding: .18rem .35rem; padding-left: calc(.35rem + var(--depth,0) * 1.1rem); border-radius: 4px; align-items: baseline; }
+    .packet-row:hover { background: rgba(255,255,255,.04); }
+    .pk-key   { color: var(--accent); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .pk-index { color: var(--muted); font-weight: 400; }
+    .pk-val   { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .val-string { color: #3ecf8e; }
+    .val-number { color: #f0c14a; }
+    .val-bool   { color: #c792ea; }
+    .val-null   { color: var(--muted); font-style: italic; }
+    .val-object, .val-array { color: var(--muted); cursor: pointer; }
+    .val-object:hover, .val-array:hover { color: var(--text); }
+    .nested-obj { display: contents; }
+    .nested-obj > summary { list-style: none; cursor: pointer; user-select: none; display: inline; }
+    .nested-obj > summary::-webkit-details-marker { display: none; }
+    .raw-json { margin-top: .3rem; }
+    .raw-json > summary { cursor: pointer; color: var(--muted); font-size: .72rem; list-style: none; user-select: none; }
+    .raw-json > summary::-webkit-details-marker { display: none; }
+    .raw-json > summary::before { content: '▶ '; font-size: .6rem; }
+    .raw-json[open] > summary::before { content: '▼ '; }
+    .raw-json > pre { margin: .25rem 0 0; padding: .55rem .65rem; background: var(--bg); border-radius: 6px; overflow: auto; font-size: .73rem; max-height: 180px; }
+
+    .empty-state { text-align: center; padding: 2.5rem 1rem; color: var(--muted); font-size: .9rem; }
   </style>
 </head>
 <body>
@@ -45,125 +102,229 @@
 <header>
   <div>
     <h1>fs-session-mailer</h1>
-    <p class="sub">Receives Fullstory session-summary webhooks and emails them to an address in the payload.</p>
+    <p class="sub">Receives Fullstory session-summary webhooks and emails them to the address in the payload.</p>
   </div>
-  <div class="pill" id="healthPill">checking…</div>
+  <div class="status-pill" id="connStatus" data-state="connecting">Connecting…</div>
 </header>
 
-<main>
+<div class="page">
 
-  <!-- Endpoint reference -->
+  <div class="grid2">
+
+    <!-- Test fire -->
+    <div class="card">
+      <h2>Send a test email</h2>
+      <p class="hint">Fires a sample payload through <code>POST /test</code>.</p>
+      <label for="testEmail">Recipient email</label>
+      <input type="email" id="testEmail" placeholder="you@example.com" />
+      <button class="btn primary" id="btnTest" style="margin-top:.75rem;width:100%">Send test email</button>
+      <div class="result" id="testResult"></div>
+    </div>
+
+    <!-- Endpoint reference -->
+    <div class="card">
+      <h2>Endpoints</h2>
+      <table class="ref">
+        <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td>POST</td><td>/webhook</td><td>Receive session summary &amp; send email</td></tr>
+          <tr><td>POST</td><td>/test</td><td>Fire a sample payload</td></tr>
+          <tr><td>GET</td><td>/health</td><td>Health check</td></tr>
+          <tr><td>GET</td><td>/api/feed</td><td>Live SSE event stream</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+
+  <!-- Live request feed -->
   <div class="card">
-    <h2>Endpoint</h2>
-    <table>
-      <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
-      <tbody>
-        <tr><td>POST</td><td>/webhook</td><td>Receive session summary &amp; send email</td></tr>
-        <tr><td>POST</td><td>/test</td><td>Fire a sample payload (dev only)</td></tr>
-        <tr><td>GET</td><td>/health</td><td>Health check</td></tr>
-      </tbody>
-    </table>
+    <div class="card-head">
+      <h2>Incoming requests</h2>
+      <div style="display:flex;gap:.5rem;align-items:center">
+        <span id="reqCount" style="font-size:.8rem;color:var(--muted)">0 received</span>
+        <button class="btn ghost" id="btnClear" style="font-size:.78rem;padding:.25rem .6rem">Clear</button>
+      </div>
+    </div>
+    <p class="hint">Live feed — newest first. Shows every request hitting <code>/webhook</code> or <code>/test</code> with all field names and values.</p>
+    <div class="feed-list" id="feed">
+      <div class="empty-state" id="emptyState">Waiting for incoming requests…</div>
+    </div>
   </div>
 
   <!-- Payload reference -->
   <div class="card">
-    <h2>Payload fields</h2>
-    <p class="hint">Send a JSON body to <code>POST /webhook</code>. The email address field is required; all others are optional and will be rendered in the email.</p>
-    <table>
+    <h2>Expected payload fields</h2>
+    <table class="ref">
       <thead><tr><th>Field</th><th>Required?</th><th>Notes</th></tr></thead>
       <tbody>
-        <tr><td>to_email</td><td>one of these</td><td>Recipient address — also accepted as <code>email</code>, <code>recipient</code>, <code>recipient_email</code></td></tr>
-        <tr><td>session_id</td><td>—</td><td>Appears in the email subject and header</td></tr>
+        <tr><td>to_email</td><td>one of these</td><td>Also accepted as <code>email</code>, <code>recipient</code>, <code>recipient_email</code></td></tr>
+        <tr><td>session_id</td><td>—</td><td>Appears in email subject and header</td></tr>
         <tr><td>session_url</td><td>—</td><td>Rendered as a clickable link</td></tr>
-        <tr><td>user_id</td><td>—</td><td></td></tr>
-        <tr><td>user_email</td><td>—</td><td></td></tr>
-        <tr><td>summary</td><td>—</td><td>Narrative / AI summary — displayed prominently at the top</td></tr>
+        <tr><td>user_id / user_email</td><td>—</td><td></td></tr>
+        <tr><td>summary</td><td>—</td><td>AI / narrative summary — shown prominently at top of email</td></tr>
         <tr><td>duration_seconds</td><td>—</td><td>Shown as Xm Ys</td></tr>
         <tr><td>page_count</td><td>—</td><td></td></tr>
-        <tr><td>events</td><td>—</td><td>Array of strings or objects — listed below the details table</td></tr>
-        <tr><td><em>any other key</em></td><td>—</td><td>Extra scalar fields are appended to the details table</td></tr>
+        <tr><td>events</td><td>—</td><td>Array of strings or objects</td></tr>
+        <tr><td><em>any other key</em></td><td>—</td><td>Extra fields appended to details table in the email</td></tr>
       </tbody>
     </table>
   </div>
 
-  <!-- Example payload -->
-  <div class="card">
-    <h2>Example payload</h2>
-    <pre>{
-  "to_email": "alice@example.com",
-  "session_id": "abc-123",
-  "session_url": "https://app.fullstory.com/ui/ORG/sessions/abc-123",
-  "user_id": "user_9876",
-  "user_email": "alice@example.com",
-  "summary": "User compared pricing tiers and abandoned at checkout.",
-  "duration_seconds": 187,
-  "page_count": 4,
-  "events": [
-    "Page view: /pricing",
-    "Click: Compare plans",
-    "Page view: /checkout",
-    "Rage click: Apply coupon",
-    "Page exit"
-  ]
-}</pre>
-  </div>
-
-  <!-- Test fire -->
-  <div class="card">
-    <h2>Send a test email</h2>
-    <p class="hint">Fires the built-in sample payload through <code>POST /test</code>. SMTP must be configured in <code>.env</code> for this to send a real email.</p>
-    <label for="testEmail">Recipient email</label>
-    <input type="email" id="testEmail" placeholder="you@example.com" />
-    <button id="btnTest">Send test email</button>
-    <div class="result" id="testResult"></div>
-  </div>
-
-</main>
+</div>
 
 <script>
-  // Health check
-  fetch('/health')
-    .then(r => r.json())
-    .then(j => {
-      const el = document.getElementById('healthPill');
-      el.textContent = j.ok ? 'Live' : 'Error';
-      el.className = 'pill ' + (j.ok ? 'ok' : 'err');
-    })
-    .catch(() => {
-      const el = document.getElementById('healthPill');
-      el.textContent = 'Unreachable';
-      el.className = 'pill err';
-    });
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
-  // Test button
-  document.getElementById('btnTest').addEventListener('click', async () => {
-    const email = document.getElementById('testEmail').value.trim();
-    const resultEl = document.getElementById('testResult');
-    if (!email) { alert('Enter a recipient email first'); return; }
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
 
-    const btn = document.getElementById('btnTest');
-    btn.disabled = true;
-    btn.textContent = 'Sending…';
+function renderValue(v, depth) {
+  if (v === null || v === undefined) return '<span class="val-null">null</span>';
+  if (typeof v === 'boolean') return `<span class="val-bool">${v}</span>`;
+  if (typeof v === 'number')  return `<span class="val-number">${esc(String(v))}</span>`;
+  if (typeof v === 'string')  return `<span class="val-string">&quot;${esc(v)}&quot;</span>`;
+  if (Array.isArray(v)) {
+    if (!v.length) return '<span class="val-null">[]</span>';
+    return `<details class="nested-obj"><summary class="val-array">[${v.length} item${v.length===1?'':'s'}]</summary><div class="packet-table nested">${renderRows(v, depth+1)}</div></details>`;
+  }
+  if (typeof v === 'object') {
+    const keys = Object.keys(v);
+    if (!keys.length) return '<span class="val-null">{}</span>';
+    return `<details class="nested-obj"><summary class="val-object">{${keys.length} field${keys.length===1?'':'s'}}</summary><div class="packet-table nested">${renderRows(v, depth+1)}</div></details>`;
+  }
+  return `<span>${esc(String(v))}</span>`;
+}
 
-    try {
-      const r = await fetch('/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to_email: email }),
-      });
-      const j = await r.json();
-      resultEl.textContent = JSON.stringify(j, null, 2);
-      resultEl.className = 'result ' + (j.ok ? 'ok' : 'err');
-      resultEl.style.display = 'block';
-    } catch (e) {
-      resultEl.textContent = e.message;
-      resultEl.className = 'result err';
-      resultEl.style.display = 'block';
-    } finally {
-      btn.disabled = false;
-      btn.textContent = 'Send test email';
+function renderRows(body, depth = 0) {
+  if (Array.isArray(body)) {
+    return body.map((v, i) => `
+      <div class="packet-row" style="--depth:${depth}">
+        <span class="pk-key pk-index">[${i}]</span>
+        <span class="pk-val">${renderValue(v, depth)}</span>
+      </div>`).join('');
+  }
+  if (body && typeof body === 'object') {
+    return Object.entries(body).map(([k, v]) => `
+      <div class="packet-row" style="--depth:${depth}">
+        <span class="pk-key">${esc(k)}</span>
+        <span class="pk-val">${renderValue(v, depth)}</span>
+      </div>`).join('');
+  }
+  return '';
+}
+
+// ── Request card renderer ─────────────────────────────────────────────────────
+
+let totalCount = 0;
+const reqCountEl = document.getElementById('reqCount');
+
+function renderCard(entry) {
+  const body = entry.body;
+  const fieldCount = body && typeof body === 'object' ? Object.keys(body).length : 0;
+  const sourceBadge = entry.source === 'test'
+    ? '<span class="badge badge-test">test</span>'
+    : '<span class="badge badge-hook">webhook</span>';
+  const statusBadge = entry.ok
+    ? '<span class="badge badge-ok">sent</span>'
+    : '<span class="badge badge-err">failed</span>';
+
+  return `
+    <div class="req-card ok-${entry.ok}">
+      <div class="req-meta">
+        ${sourceBadge}
+        ${statusBadge}
+        <span><strong>To</strong> ${esc(entry.to || '—')}</span>
+        <span><strong>Session</strong> ${esc(entry.session_id || '—')}</span>
+        <span><strong>At</strong> ${entry.receivedAt}</span>
+      </div>
+      <div class="packet-table">${renderRows(body) || '<span class="val-null">empty</span>'}</div>
+      <details class="raw-json">
+        <summary>${fieldCount} field${fieldCount===1?'':'s'} — view raw JSON</summary>
+        <pre>${esc(JSON.stringify(body, null, 2))}</pre>
+      </details>
+      ${entry.error ? `<div class="req-error">Error: ${esc(entry.error)}</div>` : ''}
+    </div>`;
+}
+
+function prependCard(entry) {
+  const feed = document.getElementById('feed');
+  document.getElementById('emptyState')?.remove();
+  const div = document.createElement('div');
+  div.innerHTML = renderCard(entry);
+  feed.prepend(div.firstElementChild);
+  totalCount++;
+  reqCountEl.textContent = `${totalCount} received`;
+}
+
+// ── SSE connection ────────────────────────────────────────────────────────────
+
+const es = new EventSource('/api/feed');
+const connStatus = document.getElementById('connStatus');
+
+es.onopen = () => {
+  connStatus.dataset.state = 'live';
+  connStatus.textContent = 'Live';
+};
+
+es.onerror = () => {
+  connStatus.dataset.state = 'error';
+  connStatus.textContent = 'Disconnected — retrying';
+};
+
+es.onmessage = (ev) => {
+  try {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'hello') {
+      (msg.backlog || []).forEach(prependCard);
+      return;
     }
-  });
+    if (msg.type === 'request') {
+      prependCard(msg.entry);
+    }
+  } catch { /* ignore */ }
+};
+
+// ── Clear button ──────────────────────────────────────────────────────────────
+
+document.getElementById('btnClear').addEventListener('click', () => {
+  const feed = document.getElementById('feed');
+  feed.innerHTML = '<div class="empty-state" id="emptyState">Waiting for incoming requests…</div>';
+  totalCount = 0;
+  reqCountEl.textContent = '0 received';
+});
+
+// ── Test button ───────────────────────────────────────────────────────────────
+
+document.getElementById('btnTest').addEventListener('click', async () => {
+  const email = document.getElementById('testEmail').value.trim();
+  const resultEl = document.getElementById('testResult');
+  if (!email) { alert('Enter a recipient email first'); return; }
+
+  const btn = document.getElementById('btnTest');
+  btn.disabled = true;
+  btn.textContent = 'Sending…';
+
+  try {
+    const r = await fetch('/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to_email: email }),
+    });
+    const j = await r.json();
+    resultEl.textContent = JSON.stringify(j, null, 2);
+    resultEl.className = 'result ' + (j.ok ? 'ok' : 'err');
+    resultEl.style.display = 'block';
+  } catch (e) {
+    resultEl.textContent = e.message;
+    resultEl.className = 'result err';
+    resultEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Send test email';
+  }
+});
 </script>
 </body>
 </html>

@@ -58,6 +58,43 @@ app.use(
 
 app.use(express.static(join(__dirname, 'public')));
 
+// ── Live request feed (SSE) ───────────────────────────────────────────────────
+
+const MAX_LOG = 100;
+
+/** @type {import('express').Response[]} */
+const sseClients = [];
+
+/** @type {Array<object>} */
+const requestLog = [];
+
+function broadcast(obj) {
+  const line = `data: ${JSON.stringify(obj)}\n\n`;
+  for (const res of sseClients) {
+    try { res.write(line); } catch { /* ignore */ }
+  }
+}
+
+function logRequest(entry) {
+  requestLog.push(entry);
+  if (requestLog.length > MAX_LOG) requestLog.shift();
+  broadcast({ type: 'request', entry });
+}
+
+app.get('/api/feed', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+  sseClients.push(res);
+  req.on('close', () => {
+    const i = sseClients.indexOf(res);
+    if (i >= 0) sseClients.splice(i, 1);
+  });
+  // Send backlog so a fresh page load shows recent requests
+  res.write(`data: ${JSON.stringify({ type: 'hello', backlog: requestLog.slice(-50) })}\n\n`);
+});
+
 // ── Health ────────────────────────────────────────────────────────────────────
 
 app.get('/health', (_req, res) => {
@@ -275,14 +312,29 @@ app.post('/webhook', async (req, res) => {
     return res.status(401).json({ ok: false, error: 'Invalid or missing X-FS-Signature header' });
   }
 
+  const receivedAt = new Date().toISOString();
+  let result, error;
+
   try {
-    const result = await sendSessionEmail(req.body);
+    result = await sendSessionEmail(req.body);
     res.json(result);
   } catch (err) {
     const ts = new Date().toISOString();
     console.error(`[${ts}] webhook error: ${err.message}`);
+    error = err.message;
     res.status(err.status || 502).json({ ok: false, error: err.message });
   }
+
+  logRequest({
+    id:         Math.random().toString(36).slice(2),
+    source:     'webhook',
+    receivedAt,
+    body:       req.body,
+    ok:         !error,
+    to:         result?.to ?? null,
+    session_id: result?.session_id ?? null,
+    error:      error ?? null,
+  });
 });
 
 // ── Test-fire endpoint (dev only) ─────────────────────────────────────────────
@@ -309,12 +361,27 @@ app.post('/test', async (req, res) => {
     ...overrides,
   };
 
+  const receivedAt = new Date().toISOString();
+  let result, error;
+
   try {
-    const result = await sendSessionEmail(sample);
+    result = await sendSessionEmail(sample);
     res.json(result);
   } catch (err) {
+    error = err.message;
     res.status(err.status || 502).json({ ok: false, error: err.message });
   }
+
+  logRequest({
+    id:         Math.random().toString(36).slice(2),
+    source:     'test',
+    receivedAt,
+    body:       sample,
+    ok:         !error,
+    to:         result?.to ?? null,
+    session_id: result?.session_id ?? null,
+    error:      error ?? null,
+  });
 });
 
 // ── JSON error handler (catches body-parser errors + anything else) ────────────
