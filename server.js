@@ -1,25 +1,17 @@
 /**
  * fs-session-mailer
  *
- * POST /webhook  — receive a Fullstory session-summary webhook, generate an
- *                  AI summary via the Fullstory Sessions API, and email it
- *                  to the address supplied in the JSON body.
+ * POST /webhook  — receive a Fullstory webhook, generate an AI summary via
+ *                  the Fullstory Sessions API, and email it to the address
+ *                  in the payload.
  *
  * Required payload fields
  *   to_email | email | recipient | recipient_email   — where to send the email
  *   device_id + session_id                           — used to call the FS summary API
  *
- * Optional payload fields
- *   session_url, user_id, user_email, duration_seconds, page_count, … any extra key
- *
  * Required env vars
- *   FS_API_KEY      — Fullstory API key (Basic auth value)
- *   FS_PROFILE_ID   — summary prompt-profile ID
- *   FS_API_BASE     — API base URL, e.g. https://api.eu1.fullstory.com
- *
- * Optional security
- *   If WEBHOOK_SECRET is set, the request must include an
- *   X-FS-Signature header containing HMAC-SHA256(secret, rawBody) in hex.
+ *   FS_API_KEY, FS_PROFILE_ID, FS_API_BASE
+ *   SMTP_HOST, SMTP_PORT, SMTP_SECURE, SMTP_USER, SMTP_PASS
  */
 
 import 'dotenv/config';
@@ -32,6 +24,8 @@ import { dirname, join } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// ── Config ────────────────────────────────────────────────────────────────────
+
 const PORT           = Number(process.env.PORT)   || 3849;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 const EMAIL_FROM     = process.env.EMAIL_FROM     || process.env.SMTP_USER || '';
@@ -40,18 +34,36 @@ const FS_API_KEY    = process.env.FS_API_KEY    || '';
 const FS_PROFILE_ID = process.env.FS_PROFILE_ID || '';
 const FS_API_BASE   = (process.env.FS_API_BASE  || 'https://api.fullstory.com').replace(/\/$/, '');
 
+// ── Logger ────────────────────────────────────────────────────────────────────
+
+function log(level, msg, extra) {
+  const ts = new Date().toISOString();
+  const line = extra !== undefined
+    ? `[${ts}] [${level}] ${msg} ${typeof extra === 'string' ? extra : JSON.stringify(extra)}`
+    : `[${ts}] [${level}] ${msg}`;
+  if (level === 'ERROR') console.error(line);
+  else if (level === 'WARN')  console.warn(line);
+  else console.log(line);
+}
+
+const info  = (msg, extra) => log('INFO',  msg, extra);
+const warn  = (msg, extra) => log('WARN',  msg, extra);
+const error = (msg, extra) => log('ERROR', msg, extra);
+
 // ── Mailer ────────────────────────────────────────────────────────────────────
 
-const transporter = nodemailer.createTransport({
+const smtpConfig = {
   host:   process.env.SMTP_HOST,
   port:   Number(process.env.SMTP_PORT) || 587,
   secure: process.env.SMTP_SECURE === 'true',
-  family: 4, // force IPv4 — Render's network has no outbound IPv6
+  family: 4, // force IPv4 — Render has no outbound IPv6
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
-});
+};
+
+const transporter = nodemailer.createTransport(smtpConfig);
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
@@ -95,7 +107,6 @@ app.get('/api/feed', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  // Disable nginx/Render proxy buffering so events arrive immediately
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
   sseClients.push(res);
@@ -105,7 +116,6 @@ app.get('/api/feed', (req, res) => {
   });
   res.write(`data: ${JSON.stringify({ type: 'hello', backlog: requestLog.slice(-50) })}\n\n`);
 
-  // Send a keep-alive comment every 25 s so Render doesn't close idle connections
   const ping = setInterval(() => {
     try { res.write(': ping\n\n'); } catch { clearInterval(ping); }
   }, 25000);
@@ -136,11 +146,6 @@ function verifySignature(req) {
 
 // ── Fullstory summary API ─────────────────────────────────────────────────────
 
-/**
- * Call the Fullstory Sessions API to generate an AI summary for the session.
- * Session ID is constructed as  device_id:session_id  (colon-separated).
- * Returns the summary string, or throws on error.
- */
 async function generateFSSummary(deviceId, sessionId) {
   if (!FS_API_KEY)    throw new Error('FS_API_KEY env var is not set');
   if (!FS_PROFILE_ID) throw new Error('FS_PROFILE_ID env var is not set');
@@ -148,8 +153,7 @@ async function generateFSSummary(deviceId, sessionId) {
   const compositeId = encodeURIComponent(`${deviceId}:${sessionId}`);
   const url = `${FS_API_BASE}/v2/sessions/${compositeId}/summary?profile_id=${encodeURIComponent(FS_PROFILE_ID)}`;
 
-  const ts = new Date().toISOString();
-  console.log(`[${ts}] FS summary API → GET ${url}`);
+  info(`FS API  →  GET ${url}`);
 
   const res = await fetch(url, {
     method:  'GET',
@@ -157,16 +161,19 @@ async function generateFSSummary(deviceId, sessionId) {
   });
 
   const raw = await res.text();
+  info(`FS API  ←  status=${res.status}  body=${raw.slice(0, 300)}`);
+
   if (!res.ok) {
     throw new Error(`Fullstory API ${res.status}: ${raw}`);
   }
 
-  // Response is { "summary": "..." }
   try {
     const parsed = JSON.parse(raw);
-    return typeof parsed.summary === 'string' ? parsed.summary : raw;
+    const summary = typeof parsed.summary === 'string' ? parsed.summary : raw;
+    info(`FS API  summary length=${summary.length} chars`);
+    return summary;
   } catch {
-    return raw; // plain-text response
+    return raw;
   }
 }
 
@@ -178,7 +185,7 @@ const SKIP_IN_TABLE = new Set([
   'to_email', 'email', 'recipient', 'recipient_email',
   'session_id', 'session_url', 'user_id', 'user_email',
   'summary', 'duration_seconds', 'page_count',
-  'device_id', // internal — used for API call, not rendered
+  'device_id',
 ]);
 
 function escapeHtml(s) {
@@ -219,14 +226,13 @@ function detailsTable(rows) {
 
 function buildEmailHtml(payload, generatedSummary) {
   const { session_id, session_url, user_id, user_email, duration_seconds, page_count } = payload;
-
   const summary = generatedSummary || payload.summary || null;
 
   const knownRows = [];
-  if (session_id)              knownRows.push(['Session ID', session_id]);
-  if (session_url)             knownRows.push(['Session URL', session_url]);
-  if (user_id)                 knownRows.push(['User ID', user_id]);
-  if (user_email)              knownRows.push(['User email', user_email]);
+  if (session_id)               knownRows.push(['Session ID', session_id]);
+  if (session_url)              knownRows.push(['Session URL', session_url]);
+  if (user_id)                  knownRows.push(['User ID', user_id]);
+  if (user_email)               knownRows.push(['User email', user_email]);
   if (duration_seconds != null) {
     const m = Math.floor(duration_seconds / 60);
     const s = Math.round(duration_seconds % 60);
@@ -245,30 +251,20 @@ function buildEmailHtml(payload, generatedSummary) {
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="margin:0;padding:0;background:#f0f2f5;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif">
   <div style="max-width:660px;margin:36px auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.10)">
-
-    <!-- Header -->
     <div style="background:#1a2332;padding:28px 36px">
       <div style="font-size:11px;font-weight:700;letter-spacing:.08em;color:#3d8bfd;text-transform:uppercase;margin-bottom:6px">Fullstory</div>
       <h1 style="margin:0;color:#e8eef5;font-size:22px;font-weight:700">Session Summary</h1>
       ${session_id ? `<p style="margin:6px 0 0;color:#8b9cb3;font-size:13px">Session&nbsp;${escapeHtml(String(session_id))}</p>` : ''}
     </div>
-
     <div style="padding:28px 36px">
-
-      <!-- AI summary -->
       ${summary ? `
       <div style="background:#f0f7ff;border-left:4px solid #3d8bfd;border-radius:6px;padding:16px 18px;margin-bottom:24px;font-size:15px;line-height:1.65;color:#333;white-space:pre-wrap">
         ${escapeHtml(String(summary))}
       </div>` : ''}
-
-      <!-- Details table -->
       ${allRows.length ? `
       <h2 style="color:#333;font-size:16px;margin:0 0 10px">Details</h2>
       ${detailsTable(allRows)}` : ''}
-
     </div>
-
-    <!-- Footer -->
     <div style="padding:18px 36px;border-top:1px solid #eee;color:#bbb;font-size:11px">
       Sent by fs-session-mailer &bull; ${new Date().toUTCString()}
     </div>
@@ -288,15 +284,20 @@ function buildTextBody(payload, generatedSummary) {
   return lines.join('\n');
 }
 
-// ── Core send logic (shared by /webhook and /test) ───────────────────────────
+// ── Core send logic ───────────────────────────────────────────────────────────
 
 async function sendSessionEmail(body) {
+  // ── 1. Validate body ──────────────────────────────────────────────────────
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    error('Body validation failed — not a JSON object', { body });
     const e = new Error('Request body must be a JSON object');
     e.status = 400;
     throw e;
   }
 
+  info(`Body received  keys=[${Object.keys(body).join(', ')}]`);
+
+  // ── 2. Resolve recipient ───────────────────────────────────────────────────
   const toEmail =
     body.to_email        ||
     body.email           ||
@@ -304,6 +305,15 @@ async function sendSessionEmail(body) {
     body.recipient_email;
 
   if (!toEmail || typeof toEmail !== 'string' || !toEmail.includes('@')) {
+    error('No valid recipient email found in payload', {
+      checked: ['to_email', 'email', 'recipient', 'recipient_email'],
+      values:  {
+        to_email:        body.to_email,
+        email:           body.email,
+        recipient:       body.recipient,
+        recipient_email: body.recipient_email,
+      },
+    });
     const e = new Error(
       'Payload must include a valid email in one of: to_email, email, recipient, recipient_email',
     );
@@ -311,55 +321,79 @@ async function sendSessionEmail(body) {
     throw e;
   }
 
-  // Generate summary via Fullstory API when device_id + session_id are present
+  info(`Recipient resolved  to=${toEmail}`);
+
+  // ── 3. Generate summary via Fullstory API ──────────────────────────────────
   let generatedSummary = null;
   const deviceId  = body.device_id;
   const sessionId = body.session_id || body.sessionId;
 
+  info(`Session fields  device_id=${deviceId ?? '(missing)'}  session_id=${sessionId ?? '(missing)'}`);
+
   if (deviceId && sessionId) {
+    info(`Calling Fullstory summary API  composite=${deviceId}:${sessionId}`);
     try {
       generatedSummary = await generateFSSummary(deviceId, sessionId);
-      const ts = new Date().toISOString();
-      console.log(`[${ts}] FS summary generated  session=${deviceId}:${sessionId}`);
+      info(`Summary generated successfully  length=${generatedSummary.length} chars`);
     } catch (err) {
-      // Non-fatal: log and fall back to payload's summary field (if any)
-      console.warn(`[${new Date().toISOString()}] FS summary failed: ${err.message}`);
+      warn(`Summary generation failed (non-fatal, continuing without summary)  error=${err.message}`);
     }
+  } else {
+    warn('Skipping summary API call — device_id and/or session_id missing from payload');
   }
 
+  // ── 4. Build and send email ────────────────────────────────────────────────
   const subject = sessionId
     ? `Fullstory Session Summary – ${sessionId}`
     : 'Fullstory Session Summary';
 
-  await transporter.sendMail({
-    from:    EMAIL_FROM,
-    to:      toEmail,
-    subject,
-    html:    buildEmailHtml(body, generatedSummary),
-    text:    buildTextBody(body, generatedSummary),
-  });
+  info(`Sending email  from="${EMAIL_FROM}"  to=${toEmail}  subject="${subject}"  smtp=${smtpConfig.host}:${smtpConfig.port}  secure=${smtpConfig.secure}`);
 
-  const ts = new Date().toISOString();
-  console.log(`[${ts}] email sent  to=${toEmail}  session=${sessionId ?? 'n/a'}`);
+  let mailResult;
+  try {
+    mailResult = await transporter.sendMail({
+      from:    EMAIL_FROM,
+      to:      toEmail,
+      subject,
+      html:    buildEmailHtml(body, generatedSummary),
+      text:    buildTextBody(body, generatedSummary),
+    });
+  } catch (err) {
+    error(`SMTP sendMail failed  code=${err.code}  command=${err.command}  message=${err.message}`);
+    if (err.response) error(`SMTP server response: ${err.response}`);
+    throw err;
+  }
+
+  info(`Email sent  messageId=${mailResult.messageId}  accepted=${JSON.stringify(mailResult.accepted)}  rejected=${JSON.stringify(mailResult.rejected)}`);
   return { ok: true, to: toEmail, session_id: sessionId ?? null };
 }
 
 // ── Webhook endpoint ──────────────────────────────────────────────────────────
 
 app.post('/webhook', async (req, res) => {
-  if (!verifySignature(req)) {
-    return res.status(401).json({ ok: false, error: 'Invalid or missing X-FS-Signature header' });
+  const receivedAt = new Date().toISOString();
+  info(`POST /webhook  ip=${req.ip}  content-type="${req.headers['content-type']}"  content-length=${req.headers['content-length'] ?? '?'}`);
+
+  // Signature check
+  if (!WEBHOOK_SECRET) {
+    info('Signature check skipped — WEBHOOK_SECRET not configured');
+  } else {
+    const passed = verifySignature(req);
+    info(`Signature check  passed=${passed}`);
+    if (!passed) {
+      error('Request rejected — invalid or missing X-FS-Signature header');
+      return res.status(401).json({ ok: false, error: 'Invalid or missing X-FS-Signature header' });
+    }
   }
 
-  const receivedAt = new Date().toISOString();
-  let result, error;
+  let result, reqError;
 
   try {
     result = await sendSessionEmail(req.body);
     res.json(result);
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] webhook error: ${err.message}`);
-    error = err.message;
+    error(`sendSessionEmail threw  status=${err.status ?? 502}  message=${err.message}`);
+    reqError = err.message;
     res.status(err.status || 502).json({ ok: false, error: err.message });
   }
 
@@ -368,42 +402,44 @@ app.post('/webhook', async (req, res) => {
     source:     'webhook',
     receivedAt,
     body:       req.body,
-    ok:         !error,
+    ok:         !reqError,
     to:         result?.to ?? null,
     session_id: result?.session_id ?? null,
-    error:      error ?? null,
+    error:      reqError ?? null,
   });
 });
 
-// ── Test-fire endpoint (dev only) ─────────────────────────────────────────────
+// ── Test-fire endpoint ────────────────────────────────────────────────────────
 
 app.post('/test', async (req, res) => {
+  info('POST /test  building sample payload from overrides');
   const overrides = req.body || {};
   const sample = {
-    to_email:         overrides.to_email   || 'you@example.com',
-    device_id:        overrides.device_id  || null,
-    session_id:       overrides.session_id || null,
-    session_url:      overrides.session_url || null,
-    user_id:          overrides.user_id    || null,
-    user_email:       overrides.user_email || null,
+    to_email:         overrides.to_email        || 'you@example.com',
+    device_id:        overrides.device_id       || null,
+    session_id:       overrides.session_id      || null,
+    session_url:      overrides.session_url     || null,
+    user_id:          overrides.user_id         || null,
+    user_email:       overrides.user_email      || null,
     duration_seconds: overrides.duration_seconds ?? null,
-    page_count:       overrides.page_count ?? null,
+    page_count:       overrides.page_count      ?? null,
     ...overrides,
   };
 
-  // Strip nulls from sample so the email isn't cluttered
   for (const k of Object.keys(sample)) {
     if (sample[k] === null) delete sample[k];
   }
 
+  info(`Test payload keys=[${Object.keys(sample).join(', ')}]`);
+
   const receivedAt = new Date().toISOString();
-  let result, error;
+  let result, reqError;
 
   try {
     result = await sendSessionEmail(sample);
     res.json(result);
   } catch (err) {
-    error = err.message;
+    reqError = err.message;
     res.status(err.status || 502).json({ ok: false, error: err.message });
   }
 
@@ -412,10 +448,10 @@ app.post('/test', async (req, res) => {
     source:     'test',
     receivedAt,
     body:       sample,
-    ok:         !error,
+    ok:         !reqError,
     to:         result?.to ?? null,
     session_id: result?.session_id ?? null,
-    error:      error ?? null,
+    error:      reqError ?? null,
   });
 });
 
@@ -425,24 +461,48 @@ app.post('/test', async (req, res) => {
 app.use((err, req, res, _next) => {
   const status  = err.status || err.statusCode || 500;
   const message = err.expose !== false && err.message ? err.message : 'Internal server error';
-  console.error(`[${new Date().toISOString()}] unhandled error ${status}: ${err.message}`);
+  error(`Unhandled Express error  status=${status}  message=${err.message}`);
   res.status(status).json({ ok: false, error: message });
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
-  console.log(`fs-session-mailer running on http://localhost:${PORT}`);
-  console.log(`Webhook endpoint: POST http://localhost:${PORT}/webhook`);
-  console.log(`FS API base: ${FS_API_BASE}  profile: ${FS_PROFILE_ID || '(not set)'}`);
+app.listen(PORT, async () => {
+  info('═══════════════════════════════════════════════');
+  info(`fs-session-mailer starting on port ${PORT}`);
+  info('───────────────────────────────────────────────');
+  info(`SMTP host:      ${smtpConfig.host ?? '(not set)'}`);
+  info(`SMTP port:      ${smtpConfig.port}`);
+  info(`SMTP secure:    ${smtpConfig.secure}`);
+  info(`SMTP user:      ${smtpConfig.auth.user ?? '(not set)'}`);
+  info(`SMTP pass:      ${smtpConfig.auth.pass ? '(set)' : '(NOT SET)'}`);
+  info(`EMAIL_FROM:     ${EMAIL_FROM || '(not set)'}`);
+  info('───────────────────────────────────────────────');
+  info(`FS_API_BASE:    ${FS_API_BASE}`);
+  info(`FS_PROFILE_ID:  ${FS_PROFILE_ID || '(NOT SET)'}`);
+  info(`FS_API_KEY:     ${FS_API_KEY ? '(set)' : '(NOT SET)'}`);
+  info(`WEBHOOK_SECRET: ${WEBHOOK_SECRET ? '(set)' : '(not set — all requests accepted)'}`);
+  info('───────────────────────────────────────────────');
+
+  // Verify SMTP connection on startup so config errors surface immediately
+  info('Verifying SMTP connection…');
+  try {
+    await transporter.verify();
+    info('SMTP connection verified OK');
+  } catch (err) {
+    error(`SMTP connection FAILED  code=${err.code}  message=${err.message}`);
+    if (err.response) error(`SMTP server said: ${err.response}`);
+  }
+
+  info('═══════════════════════════════════════════════');
 
   const SELF_URL = process.env.RENDER_EXTERNAL_URL;
   if (SELF_URL) {
     setInterval(() => {
       fetch(`${SELF_URL}/health`)
-        .then(() => console.log(`[${new Date().toISOString()}] keep-alive ping ok`))
-        .catch((e) => console.warn(`[${new Date().toISOString()}] keep-alive ping failed: ${e.message}`));
+        .then(() => info('Keep-alive ping ok'))
+        .catch((e) => warn(`Keep-alive ping failed  ${e.message}`));
     }, 10 * 60 * 1000);
-    console.log(`Keep-alive ping active → ${SELF_URL}/health every 10 min`);
+    info(`Keep-alive ping active → ${SELF_URL}/health every 10 min`);
   }
 });
