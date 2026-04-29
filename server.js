@@ -15,9 +15,8 @@
  */
 
 import 'dotenv/config';
-import dns from 'dns';
 import express from 'express';
-import nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -54,46 +53,7 @@ const error = (msg, extra) => log('ERROR', msg, extra);
 
 // ── Mailer ────────────────────────────────────────────────────────────────────
 
-const smtpConfig = {
-  host:   process.env.SMTP_HOST || '',
-  port:   Number(process.env.SMTP_PORT) || 587,
-  secure: process.env.SMTP_SECURE === 'true',
-  auth: {
-    user: process.env.SMTP_USER || '',
-    pass: process.env.SMTP_PASS || '',
-  },
-};
-
-// Transporter is initialised after IPv4 DNS pre-resolution in app.listen().
-// We resolve the hostname → IPv4 address ourselves so Node.js never picks
-// an IPv6 address (Render has no outbound IPv6). tls.servername ensures the
-// TLS certificate is verified against the original hostname, not the IP.
-let transporter;
-
-async function initTransporter() {
-  const { host: hostname, port, secure, auth } = smtpConfig;
-  let host = hostname;
-  if (hostname) {
-    await new Promise((resolve) => {
-      dns.lookup(hostname, { family: 4 }, (err, address) => {
-        if (!err && address) {
-          host = address;
-          info(`SMTP DNS pre-resolve  ${hostname} → ${host} (IPv4)`);
-        } else {
-          warn(`SMTP DNS pre-resolve failed (${err?.message}), falling back to hostname`);
-        }
-        resolve();
-      });
-    });
-  }
-  transporter = nodemailer.createTransport({
-    host,
-    port,
-    secure,
-    tls: { servername: hostname }, // SNI: cert checked against hostname, not IP
-    auth,
-  });
-}
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
@@ -377,24 +337,22 @@ async function sendSessionEmail(body) {
     ? `Fullstory Session Summary – ${sessionId}`
     : 'Fullstory Session Summary';
 
-  info(`Sending email  from="${EMAIL_FROM}"  to=${toEmail}  subject="${subject}"  smtp=${smtpConfig.host}:${smtpConfig.port}  secure=${smtpConfig.secure}`);
+  info(`Sending email via Resend  from="${EMAIL_FROM}"  to=${toEmail}  subject="${subject}"`);
 
-  let mailResult;
-  try {
-    mailResult = await transporter.sendMail({
-      from:    EMAIL_FROM,
-      to:      toEmail,
-      subject,
-      html:    buildEmailHtml(body, generatedSummary),
-      text:    buildTextBody(body, generatedSummary),
-    });
-  } catch (err) {
-    error(`SMTP sendMail failed  code=${err.code}  command=${err.command}  message=${err.message}`);
-    if (err.response) error(`SMTP server response: ${err.response}`);
-    throw err;
+  const { data, error: sendError } = await resend.emails.send({
+    from:    EMAIL_FROM,
+    to:      toEmail,
+    subject,
+    html:    buildEmailHtml(body, generatedSummary),
+    text:    buildTextBody(body, generatedSummary),
+  });
+
+  if (sendError) {
+    error(`Resend send failed  name=${sendError.name}  message=${sendError.message}`);
+    throw Object.assign(new Error(sendError.message), { status: 502 });
   }
 
-  info(`Email sent  messageId=${mailResult.messageId}  accepted=${JSON.stringify(mailResult.accepted)}  rejected=${JSON.stringify(mailResult.rejected)}`);
+  info(`Email sent via Resend  id=${data?.id}`);
   return { ok: true, to: toEmail, session_id: sessionId ?? null };
 }
 
@@ -501,11 +459,7 @@ app.listen(PORT, async () => {
   info('═══════════════════════════════════════════════');
   info(`fs-session-mailer starting on port ${PORT}`);
   info('───────────────────────────────────────────────');
-  info(`SMTP host:      ${smtpConfig.host ?? '(not set)'}`);
-  info(`SMTP port:      ${smtpConfig.port}`);
-  info(`SMTP secure:    ${smtpConfig.secure}`);
-  info(`SMTP user:      ${smtpConfig.auth.user ?? '(not set)'}`);
-  info(`SMTP pass:      ${smtpConfig.auth.pass ? '(set)' : '(NOT SET)'}`);
+  info(`RESEND_API_KEY: ${process.env.RESEND_API_KEY ? '(set)' : '(NOT SET)'}`);
   info(`EMAIL_FROM:     ${EMAIL_FROM || '(not set)'}`);
   info('───────────────────────────────────────────────');
   info(`FS_API_BASE:    ${FS_API_BASE}`);
@@ -513,17 +467,6 @@ app.listen(PORT, async () => {
   info(`FS_API_KEY:     ${FS_API_KEY ? '(set)' : '(NOT SET)'}`);
   info(`WEBHOOK_SECRET: ${WEBHOOK_SECRET ? '(set)' : '(not set — all requests accepted)'}`);
   info('───────────────────────────────────────────────');
-
-  // Pre-resolve SMTP hostname to IPv4, then verify the connection.
-  await initTransporter();
-  info('Verifying SMTP connection…');
-  try {
-    await transporter.verify();
-    info('SMTP connection verified OK');
-  } catch (err) {
-    error(`SMTP connection FAILED  code=${err.code}  message=${err.message}`);
-    if (err.response) error(`SMTP server said: ${err.response}`);
-  }
 
   info('═══════════════════════════════════════════════');
 
