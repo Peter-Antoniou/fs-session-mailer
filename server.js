@@ -22,8 +22,6 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
-// Force IPv4-first DNS resolution globally — Render has no outbound IPv6.
-dns.setDefaultResultOrder('ipv4first');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -57,17 +55,45 @@ const error = (msg, extra) => log('ERROR', msg, extra);
 // ── Mailer ────────────────────────────────────────────────────────────────────
 
 const smtpConfig = {
-  host:   process.env.SMTP_HOST,
+  host:   process.env.SMTP_HOST || '',
   port:   Number(process.env.SMTP_PORT) || 587,
   secure: process.env.SMTP_SECURE === 'true',
-  family: 4, // force IPv4 — Render has no outbound IPv6
   auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
+    user: process.env.SMTP_USER || '',
+    pass: process.env.SMTP_PASS || '',
   },
 };
 
-const transporter = nodemailer.createTransport(smtpConfig);
+// Transporter is initialised after IPv4 DNS pre-resolution in app.listen().
+// We resolve the hostname → IPv4 address ourselves so Node.js never picks
+// an IPv6 address (Render has no outbound IPv6). tls.servername ensures the
+// TLS certificate is verified against the original hostname, not the IP.
+let transporter;
+
+async function initTransporter() {
+  const { host: hostname, port, secure, auth } = smtpConfig;
+  let host = hostname;
+  if (hostname) {
+    await new Promise((resolve) => {
+      dns.lookup(hostname, { family: 4 }, (err, address) => {
+        if (!err && address) {
+          host = address;
+          info(`SMTP DNS pre-resolve  ${hostname} → ${host} (IPv4)`);
+        } else {
+          warn(`SMTP DNS pre-resolve failed (${err?.message}), falling back to hostname`);
+        }
+        resolve();
+      });
+    });
+  }
+  transporter = nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    tls: { servername: hostname }, // SNI: cert checked against hostname, not IP
+    auth,
+  });
+}
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
@@ -488,7 +514,8 @@ app.listen(PORT, async () => {
   info(`WEBHOOK_SECRET: ${WEBHOOK_SECRET ? '(set)' : '(not set — all requests accepted)'}`);
   info('───────────────────────────────────────────────');
 
-  // Verify SMTP connection on startup so config errors surface immediately
+  // Pre-resolve SMTP hostname to IPv4, then verify the connection.
+  await initTransporter();
   info('Verifying SMTP connection…');
   try {
     await transporter.verify();
