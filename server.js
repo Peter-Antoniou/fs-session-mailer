@@ -15,11 +15,15 @@
  */
 
 import 'dotenv/config';
+import dns from 'dns';
 import express from 'express';
 import nodemailer from 'nodemailer';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+
+// Force IPv4-first DNS resolution globally — Render has no outbound IPv6.
+dns.setDefaultResultOrder('ipv4first');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
